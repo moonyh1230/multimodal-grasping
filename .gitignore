@@ -1,0 +1,13 @@
+# Ignore all .pt files in the current folder
+*.pt
+!sg_15class_0429.pt
+
+checkpoints/
+.idea/
+.vscode/
+data/inst_dataset/
+yolo_pretrain/
+test.ipynb
+.env
+
+**/__pycache__/

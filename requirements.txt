@@ -1,0 +1,28 @@
+# ---------- 기본 PyTorch (CUDA 11.8) ----------
+--extra-index-url https://download.pytorch.org/whl/cu118
+torch==2.2.0+cu118
+torchvision==0.17.0+cu118
+torchaudio==2.2.0+cu118           # (선택) 동일 CUDA 빌드
+
+# ---------- 핵심 라이브러리 ----------
+ultralytics==8.2.0                # YOLOv8‑seg
+pytorch-lightning==2.2.4
+albumentations>=1.4.7
+opencv-python==4.10.0.82
+pycocotools==2.0.7                # COCO 툴킷 (Win wheel 지원)
+shapely==2.0.3                    # IOU 평가
+yacs==0.1.8                       # config 관리
+tqdm==4.66.4
+
+# ---------- 시각화·로그 ----------
+matplotlib==3.9.0
+tensorboard==2.16.2
+tensorboardX==2.6.2
+
+# ---------- 보조 ----------
+scikit-learn>=1.4.2               # KFold 등
+torchsummary==1.5.1               # 모델 요약
+
+# ---------- 주의 ----------
+# rclpy / cv_bridge (ROS 2) 는 ROS 2 설치 시 함께 제공되므로
+# pip 로 추가 설치하지 않습니다.
