@@ -58,24 +58,19 @@ class GraspHeadROI(nn.Module):
             in_channels=in_channels, num_classes=num_classes
         )
 
-    def forward(self, feats, boxes, idxs):
+    def forward(self, feats, boxes):
         # box size filtering
-        w = boxes[:, 2] - boxes[:, 0]
-        h = boxes[:, 3] - boxes[:, 1]
-        valid = (w > 1) & (h > 1)
-        if valid.sum() == 0:
-            raise RuntimeError("No valid boxes in batch!")
+        for i in range(len(boxes)):
+            w = boxes[i][:, 2] - boxes[i][:, 0]
+            h = boxes[i][:, 3] - boxes[i][:, 1]
+            valid = (w > 1) & (h > 1)
+            if valid.sum() == 0:
+                raise RuntimeError("No valid boxes in batch!")
 
-        boxes = boxes[valid]
-        idxs = idxs[valid]
+            boxes[i] = (
+                boxes[i][valid].type(feats.dtype).to(feats.device)
+            )  # [N, num_of_detected, 4(xyxy)]
 
-        # 🛑 추가 디버깅 출력
-        # print("feats.shape:", feats.shape)
-        # print("boxes.shape:", boxes.shape)
-        # print("idxs.shape:", idxs.shape)
-        # print("boxes sample:", boxes[:5])
-        # print("idxs sample:", idxs[:5])
-
-        rois = torch.cat([idxs[:, None].float(), boxes], dim=1).to(feats.device)
-        crops = self.roi_align(feats, rois)  # [N, 576, 32, 32]
+        rois = boxes
+        crops = self.roi_align(feats, rois)  # [N, 576, 7, 7]
         return self.centroid_head(crops)  # box, angle, class_logits

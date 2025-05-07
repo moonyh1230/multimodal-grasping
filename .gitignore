@@ -11,3 +11,7 @@ test.ipynb
 .env
 
 **/__pycache__/
+test/
+models/make_layers.py
+models/pooler.py
+layers/
