@@ -6,7 +6,10 @@ checkpoints/
 .idea/
 .vscode/
 data/inst_dataset/
+data/dataset.zip
 yolo_pretrain/
+data/dataset/**
+data/dataset/
 test.ipynb
 .env
 
@@ -15,3 +18,4 @@ test/
 models/make_layers.py
 models/pooler.py
 layers/
+scripts/test_model.py

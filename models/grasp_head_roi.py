@@ -60,16 +60,15 @@ class GraspHeadROI(nn.Module):
 
     def forward(self, feats, boxes):
         # box size filtering
-        for i in range(len(boxes)):
-            w = boxes[i][:, 2] - boxes[i][:, 0]
-            h = boxes[i][:, 3] - boxes[i][:, 1]
-            valid = (w > 1) & (h > 1)
-            if valid.sum() == 0:
-                raise RuntimeError("No valid boxes in batch!")
+        w = boxes[:, 3] - boxes[:, 1]
+        h = boxes[:, 4] - boxes[:, 2]
+        valid = (w > 1) & (h > 1)
+        if valid.sum() == 0:
+            raise RuntimeError("No valid boxes in batch!")
 
-            boxes[i] = (
-                boxes[i][valid].type(feats.dtype).to(feats.device)
-            )  # [N, num_of_detected, 4(xyxy)]
+        boxes = (
+            boxes[valid].type(feats.dtype).to(feats.device)
+        )  # [N, num_of_detected, 4(xyxy)]
 
         rois = boxes
         crops = self.roi_align(feats, rois)  # [N, 576, 7, 7]

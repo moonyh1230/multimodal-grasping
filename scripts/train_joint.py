@@ -1,6 +1,6 @@
 from torch.utils.data import DataLoader, random_split
 from pytorch_lightning import Trainer
-from models.seg_backbone import SegBackbone, create_yolov8_model
+from models.seg_backbone import create_yolov8_model
 from models.grasp_head_roi import GraspHeadROI
 from data.custom_txt_dataset import GraspTxtDataset
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
@@ -20,8 +20,10 @@ def my_collate_fn(batch):
     out = {}
     batch_size = len(batch)
 
-    out["image"] = torch.stack([d["image"] for d in batch], dim=0)
+    out["img"] = torch.stack([d["img"] for d in batch], dim=0)
 
+    bboxes_list = []
+    masks_list = []
     grasps_list = []
     classes_list = []
     idxs_list = []
@@ -29,12 +31,16 @@ def my_collate_fn(batch):
     for batch_idx, d in enumerate(batch):
         n = d["grasps"].size(0)
         grasps_list.append(d["grasps"])
-        classes_list.append(d["classes"])
+        classes_list.append(d["cls"])
+        bboxes_list.append(d["bboxes"])
+        masks_list.append(d["masks"])
         idxs_list.append(torch.full((n,), batch_idx, dtype=torch.long))
 
     out["grasps"] = torch.cat(grasps_list, dim=0)
-    out["classes"] = torch.cat(classes_list, dim=0)
-    out["idxs"] = torch.cat(idxs_list, dim=0)
+    out["cls"] = torch.cat(classes_list, dim=0)
+    out["batch_idx"] = torch.cat(idxs_list, dim=0)
+    out["masks"] = torch.cat(masks_list, dim=0)
+    out["bboxes"] = torch.cat(bboxes_list, dim=0)
 
     return out
 
@@ -63,16 +69,18 @@ def main():
 
     torch.cuda.set_device(0)
 
-    seg = create_yolov8_model(
-        "sg_15class_0429.pt", nc=len(classes), class_names=classes
-    )
-    # seg = SegBackbone(model_path="sg_15class_0429.pt")  # YOLOv8m-seg fine-tuned 모델
+    # seg = create_yolov8_model(
+    #     "sg_15class_0429.pt", nc=len(classes), class_names=classes
+    # )
+    seg = create_yolov8_model("sg_15class_0429.pt")  # YOLOv8m-seg fine-tuned 모델
+
     grasp = GraspHeadROI(in_channels=576, num_classes=15)
 
     lit = LitGrasp(seg, grasp, classes_name=classes, freeze_seg=True)
 
     ds = GraspTxtDataset(
-        img_dir="data/inst_dataset/images", label_json="data/inst_dataset/grasp.json"
+        img_dir="data/inst_dataset/images",
+        label_json="data/inst_dataset/grasp_mod.json",
     )
 
     n_total = len(ds)
@@ -99,17 +107,17 @@ def main():
 
     # ✅ best 모델 저장 콜백
     checkpoint_callback = ModelCheckpoint(
-        monitor="val_loss",  # 모니터링할 metric
-        mode="min",  # train_loss 작을수록 좋음
+        monitor="val_Dacc",  # 모니터링할 metric
+        mode="max",  # val_Dacc 클수록 좋음
         save_top_k=1,  # 가장 좋은 모델 1개만 저장
         save_last=True,
-        filename="{epoch:03d}-{val_loss:.4f}-best",  # best 모델 파일명
+        filename="{epoch:03d}-{val_Dacc:.4f}-best",  # best 모델 파일명
         verbose=True,
     )
 
     # ✅ EarlyStopping 콜백
     early_stop_callback = EarlyStopping(
-        monitor="val_loss", patience=15, verbose=True, mode="min"
+        monitor="val_Dacc", patience=15, verbose=True, mode="max"
     )
 
     trainer = Trainer(

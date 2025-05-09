@@ -30,35 +30,64 @@ class LitGrasp(pl.LightningModule):
         self.unfreeze_at_epoch = unfreeze_at_epoch
         self.alpha = 10
         self.beta = 10
+        self.gamma = 0.1
         self.val_outputs = []
         self.img_size = img_size
         self.save_hyperparameters(ignore=["seg", "grasp"])
 
+        # Epoch level metrics
+        self.backbone_loss = None
+        self.seg_loss = None
+
+        always_freeze_names = [".dfl"]
+        for k, v in self.seg.named_parameters():
+            if any(x in k for x in always_freeze_names):
+                v.requires_grad = False
+            elif not v.requires_grad and v.dtype.is_floating_point:
+                v.requires_grad = True
+
         if self.freeze_seg:
-            for p in self.seg.model.parameters():
+            for p in self.seg.parameters():
                 p.requires_grad = False
 
-    def forward(self, imgs):
-        seg_res, feats = self.seg.custom_forward(imgs)
-        pred_res = non_max_suppression(
-            seg_res, conf_thres=0.05, iou_thres=0.1, max_det=1, nc=15
-        )
+    def forward(self, batch):
+        seg_loss, feats = self.seg.custom_forward(batch["img"])
+        batch_loss = seg_loss[0]
+        loss_items = seg_loss[1]
 
-        boxes = [rt[:, :4] for rt in pred_res]
+        boxes = batch["bboxes"]
 
         return self.grasp(feats[0], boxes)
 
     def training_step(self, batch, batch_idx):
-        imgs = batch["image"]
+        imgs = batch["img"]
         grasps_gt = batch["grasps"]
-        classes_gt = batch["classes"]
+        classes_gt = batch["cls"]
 
-        seg_res, feats = self.seg.custom_forward(imgs)
-        pred_res = non_max_suppression(
-            seg_res, conf_thres=0.05, iou_thres=0.1, max_det=1, nc=15
+        backbone_losses, feats = self.seg.custom_forward(batch)
+
+        self.backbone_loss = backbone_losses[0].sum()
+        self.loss_items = backbone_losses[1]
+
+        self.seg_loss = (
+            (self.seg_loss * batch_idx + self.loss_items) / (batch_idx + 1)
+            if self.seg_loss is not None
+            else self.loss_items
         )
 
-        boxes = [rt[:, :4] for rt in pred_res]
+        self.log("bbox_loss", self.seg_loss[0])
+        self.log("seg_loss", self.seg_loss[1])
+        self.log("seg_cls_loss", self.seg_loss[2])
+        self.log("dfl_loss", self.seg_loss[3])
+
+        boxes = torch.cat(
+            [
+                batch["batch_idx"][:, None],
+                batch["bboxes"].type(torch.LongTensor).to(self.device),
+            ],
+            dim=1,
+        )
+
         pred_grasp_box, pred_angle, pred_class = self.grasp(feats[0], boxes)
 
         loss_grasp_box = F.mse_loss(pred_grasp_box, grasps_gt[:, :4])
@@ -67,7 +96,7 @@ class LitGrasp(pl.LightningModule):
 
         mseloss = self.alpha * loss_grasp_box + loss_angle
 
-        total_loss = self.beta * mseloss + loss_class
+        total_loss = self.beta * mseloss + loss_class + self.backbone_loss * self.gamma
 
         self.log("loss_grasp_box", loss_grasp_box)
         self.log("loss_angle", loss_angle)
@@ -77,16 +106,22 @@ class LitGrasp(pl.LightningModule):
         return total_loss
 
     def validation_step(self, batch, batch_idx):
-        imgs = batch["image"]
+        imgs = batch["img"]
         grasps_gt = batch["grasps"]
-        classes_gt = batch["classes"]
+        classes_gt = batch["cls"]
 
-        seg_res, feats = self.seg.custom_forward(imgs)
-        pred_res = non_max_suppression(
-            seg_res, conf_thres=0.05, iou_thres=0.1, max_det=1, nc=15
-        )
+        pred_res, feats, preds = self.seg.custom_forward(imgs)
+        val_seg_loss, _ = self.seg.v8segloss(preds[1], batch)
 
-        boxes = [rt[:, :4] for rt in pred_res]
+        val_backbone_loss = val_seg_loss[0].sum()
+
+        boxes = [
+            torch.cat(
+                [(torch.ones(rt.shape[0], 1) * bn).to(self.device), rt[:, :4]], dim=1
+            )
+            for bn, rt in enumerate(pred_res)
+        ]
+        boxes = torch.cat(boxes, dim=0).type(torch.LongTensor).to(self.device)
         pred_grasp_box, pred_angle, pred_class = self.grasp(feats[0], boxes)
 
         loss_grasp_box = F.mse_loss(pred_grasp_box, grasps_gt[:, :4])
@@ -95,7 +130,7 @@ class LitGrasp(pl.LightningModule):
 
         mseloss = self.alpha * loss_grasp_box + loss_angle
 
-        val_loss = self.beta * mseloss + loss_class
+        val_loss = self.beta * mseloss + loss_class + val_backbone_loss * self.gamma
 
         pred_combined = torch.cat([pred_grasp_box, pred_angle], dim=1)  # (B, 5)
         gt_combined = torch.cat([grasps_gt[:, :4], grasps_gt[:, 4:5]], dim=1)
@@ -142,7 +177,7 @@ class LitGrasp(pl.LightningModule):
             optimizer = torch.optim.AdamW(self.grasp.parameters(), lr=self.lr)
         else:
             optimizer = torch.optim.AdamW(
-                list(self.seg.model.parameters()) + list(self.grasp.parameters()),
+                list(self.seg.parameters()) + list(self.grasp.parameters()),
                 lr=self.lr,
             )
 
