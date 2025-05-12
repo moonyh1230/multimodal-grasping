@@ -1,6 +1,7 @@
 import os, json, math
 from glob import glob
 from tqdm import tqdm
+import torch
 
 from ultralytics import YOLO
 
@@ -9,7 +10,7 @@ def main():
     m = YOLO("sg_15class_0429.pt")
     IMG_DIR = "data/inst_dataset/images"
     LBL_DIR = "data/inst_dataset/labels"
-    SAVE_PATH = "data/inst_dataset/grasp_mod.json"
+    SAVE_PATH = "data/inst_dataset/grasp_mod_2.json"
 
     output = {}
 
@@ -27,15 +28,17 @@ def main():
         det_res = det_res[0]
         seg_list = []
         for n, (box, mask) in enumerate(zip(det_res.boxes, det_res.masks)):
-            x1, y1, x2, y2, conf, cls = map(float, box.data[0])
+            xn, yn, wn, hn, conf, cls = map(
+                float, torch.cat([box.xywhn[0], box.conf, box.cls], dim=0)
+            )
             mxy = mask.xy[0].tolist()
 
             seg_list.append(
                 {
-                    "x1": x1,
-                    "y1": y1,
-                    "x2": x2,
-                    "y2": y2,
+                    "xc": xn,
+                    "yc": yn,
+                    "w": wn,
+                    "h": hn,
                     "class": int(cls),
                     "mask": mxy,
                 }

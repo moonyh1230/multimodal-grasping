@@ -40,11 +40,11 @@ class GraspTxtDataset(Dataset):
         masks = []
         classes = []
         for s, g in zip(grasps_raw["segments"], grasps_raw["grasps"]):
-            bx1, by1, bx2, by2 = (
-                s["x1"],
-                s["y1"],
-                s["x2"],
-                s["y2"],
+            bx, by, bw, bh = (
+                s["xc"],
+                s["yc"],
+                s["w"],
+                s["h"],
             )
             poly = s["mask"]
             cx, cy = g["x"], g["y"]
@@ -58,7 +58,7 @@ class GraspTxtDataset(Dataset):
             # mask[:, 0] = np.round((mask[:, 0] * scaleX) / self.img_size, decPlaces)
             # mask[:, 1] = np.round((mask[:, 1] * scaleY) / self.img_size, decPlaces)
 
-            bx1, by1, bx2, by2 = bx1 * scaleX, by1 * scaleY, bx2 * scaleX, by2 * scaleY
+            bx, by, bw, bh = bx * scaleX, by * scaleY, bw * scaleX, bh * scaleY
 
             cx, cy, w, h = cx * scaleX, cy * scaleY, w * scaleX, h * scaleY
             cx = round(cx / self.img_size[0], decPlaces)
@@ -76,7 +76,7 @@ class GraspTxtDataset(Dataset):
 
             grasps.append([cx, cy, w, h, alpha])  # [cx, cy, w, h, sinθ]
             classes.append(class_id)  # class_id
-            bboxes.append([bx1, by1, bx2, by2])
+            bboxes.append([bx, by, bw, bh])
             masks.append(mask_img)
 
         return {

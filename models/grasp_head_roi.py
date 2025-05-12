@@ -52,7 +52,7 @@ class GraspHeadROI(nn.Module):
         super().__init__()
         self.device = device
         self.roi_align = ops.RoIAlign(
-            output_size=(7, 7), spatial_scale=1.0 / 32.0, sampling_ratio=2
+            output_size=(32, 32), spatial_scale=1.0 / 32.0, sampling_ratio=2
         )
         self.centroid_head = GraspAndClassHead(
             in_channels=in_channels, num_classes=num_classes

@@ -5,7 +5,7 @@ import torchvision.utils as vutils
 import numpy as np
 from utils.metrics import compute_metrics
 from torch.optim import AdamW
-from ultralytics.utils.ops import non_max_suppression
+from ultralytics.utils.ops import xywh2xyxy
 import math
 import cv2
 
@@ -30,7 +30,7 @@ class LitGrasp(pl.LightningModule):
         self.unfreeze_at_epoch = unfreeze_at_epoch
         self.alpha = 10
         self.beta = 10
-        self.gamma = 0.1
+        self.gamma = 1
         self.val_outputs = []
         self.img_size = img_size
         self.save_hyperparameters(ignore=["seg", "grasp"])
@@ -66,6 +66,16 @@ class LitGrasp(pl.LightningModule):
 
         backbone_losses, feats = self.seg.custom_forward(batch)
 
+        dtype = feats[0].dtype
+        imgsz = (
+            torch.tensor(feats[0].shape[2:], device=self.device, dtype=dtype)
+            * self.seg.stride[2]
+        )  # image size (h,w)
+
+        scale_tensor = imgsz[[1, 0, 1, 0]]
+
+        box_unnormalized = xywh2xyxy(batch["bboxes"].mul_(scale_tensor))
+
         self.backbone_loss = backbone_losses[0].sum()
         self.loss_items = backbone_losses[1]
 
@@ -83,7 +93,7 @@ class LitGrasp(pl.LightningModule):
         boxes = torch.cat(
             [
                 batch["batch_idx"][:, None],
-                batch["bboxes"].type(torch.LongTensor).to(self.device),
+                box_unnormalized.type(torch.LongTensor).to(self.device),
             ],
             dim=1,
         )
@@ -113,11 +123,22 @@ class LitGrasp(pl.LightningModule):
         pred_res, feats, preds = self.seg.custom_forward(imgs)
         val_seg_loss, _ = self.seg.v8segloss(preds[1], batch)
 
-        val_backbone_loss = val_seg_loss[0].sum()
+        val_backbone_loss = val_seg_loss.sum()
 
         boxes = [
-            torch.cat(
-                [(torch.ones(rt.shape[0], 1) * bn).to(self.device), rt[:, :4]], dim=1
+            (
+                torch.cat(
+                    [(torch.ones(rt.shape[0], 1) * bn).to(self.device), rt[:, :4]],
+                    dim=1,
+                )
+                if rt.sum() != 0
+                else torch.cat(
+                    [
+                        (torch.ones(rt.shape[0] + 1, 1) * bn).to(self.device),
+                        torch.zeros(rt.shape[0] + 1, 4).to(self.device),
+                    ],
+                    dim=1,
+                )
             )
             for bn, rt in enumerate(pred_res)
         ]
@@ -166,9 +187,9 @@ class LitGrasp(pl.LightningModule):
             pred_classes, pred_boxes, gt_classes, gt_boxes
         )
 
-        self.log("val_Cacc", Cacc, prog_bar=True)
-        self.log("val_Lacc", Lacc, prog_bar=True)
-        self.log("val_Dacc", Dacc, prog_bar=True)
+        self.log("val_Cacc", Cacc, prog_bar=False)
+        self.log("val_Lacc", Lacc, prog_bar=False)
+        self.log("val_Dacc", Dacc, prog_bar=False)
 
         self.val_outputs.clear()
 

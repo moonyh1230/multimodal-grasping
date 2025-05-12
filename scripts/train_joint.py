@@ -80,7 +80,7 @@ def main():
 
     ds = GraspTxtDataset(
         img_dir="data/inst_dataset/images",
-        label_json="data/inst_dataset/grasp_mod.json",
+        label_json="data/inst_dataset/grasp_mod_2.json",
     )
 
     n_total = len(ds)

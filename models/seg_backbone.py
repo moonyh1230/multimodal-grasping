@@ -14,10 +14,11 @@ from utils.loss import v8SegmentationLoss
 
 class YOLOv8DetectionAndFeatureExtractorModel(SegmentationModel):
     def __init__(
-        self, cfg="yolov8n.yaml", ch=3, nc=None, verbose=False
+        self, cfg="yolov8n.yaml", ch=3, nc=None, verbose=False, imgsz=(640, 640)
     ):  # model, input channels, number of classes
         super().__init__(cfg, ch, nc, verbose)
         self.v8segloss = None
+        self.imgsz = imgsz
 
     def postprocess(self, pred, max_det=1):
         preds = ops.non_max_suppression(
