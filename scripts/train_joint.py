@@ -47,7 +47,15 @@ def my_collate_fn(batch):
 
 def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_dir = os.path.join("checkpoints", timestamp)
+    training = True  # True: train, False: test
+    save_dir = (
+        os.path.join("checkpoints", timestamp)
+        if training
+        else os.path.join("stage_2", timestamp)
+    )
+    feat_dim = [20, 40, 80]  # YOLOv8m-seg에서 사용한 feature map 크기
+    feat_ch = [576, 384, 192]  # YOLOv8m-seg에서 사용한 feature map 채널 수
+    feat_args = 2
 
     classes = {
         0: "clamp_Aillis",
@@ -74,9 +82,19 @@ def main():
     # )
     seg = create_yolov8_model("sg_15class_0429.pt")  # YOLOv8m-seg fine-tuned 모델
 
-    grasp = GraspHeadROI(in_channels=576, num_classes=15)
+    grasp = GraspHeadROI(
+        in_channels=feat_ch[feat_args], num_classes=15, feat_size=feat_dim[feat_args]
+    )
 
-    lit = LitGrasp(seg, grasp, classes_name=classes, freeze_seg=True)
+    if training:
+        lit = LitGrasp(seg, grasp, classes_name=classes, freeze_seg=True)
+    else:
+        lit = LitGrasp.load_from_checkpoint(
+            checkpoint_path="checkpoints/20250512_183325/lightning_logs/version_0/checkpoints/epoch=023-val_Dacc=0.1513-best.ckpt",
+            seg=seg,
+            grasp=grasp,
+            classes_name=classes,
+        )
 
     ds = GraspTxtDataset(
         img_dir="data/inst_dataset/images",
@@ -90,17 +108,17 @@ def main():
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=4,
+        batch_size=8,
         shuffle=True,
-        num_workers=4,
+        num_workers=8,
         collate_fn=my_collate_fn,
         persistent_workers=True,
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=4,
+        batch_size=8,
         shuffle=False,
-        num_workers=4,
+        num_workers=8,
         collate_fn=my_collate_fn,
         persistent_workers=True,
     )
@@ -117,7 +135,7 @@ def main():
 
     # ✅ EarlyStopping 콜백
     early_stop_callback = EarlyStopping(
-        monitor="val_Dacc", patience=15, verbose=True, mode="max"
+        monitor="val_Dacc", patience=30, verbose=True, mode="max"
     )
 
     trainer = Trainer(

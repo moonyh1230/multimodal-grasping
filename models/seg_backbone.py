@@ -70,8 +70,8 @@ class YOLOv8DetectionAndFeatureExtractorModel(SegmentationModel):
             For different object scales, as in the original YOLOV8 implementation.
             """
             if i in {
-                # 15,
-                # 18,
+                15,
+                18,
                 21,
             }:  # if current layer is one of the feature extraction layers
                 feature_maps.append(x)
@@ -102,8 +102,8 @@ def create_yolov8_model(model_name_or_path):
     args = get_cfg(
         overrides={
             "model": model_name_or_path,
-            "conf": 0.25,
-            "iou": 0.45,
+            "conf": 0.20,
+            "iou": 0.30,
             "save": False,
             "rect": True,
             "max_det": 20,

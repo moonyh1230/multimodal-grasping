@@ -14,6 +14,51 @@ from ultralytics.utils.metrics import bbox_iou
 from ultralytics.utils.ops import crop_mask, xywh2xyxy, xyxy2xywh
 
 
+class GraspBBoxLoss(nn.Module):
+    def __init__(self, alpha=0.5, beta=0.5):
+        """
+        alpha: MSE 손실 가중치
+        beta: IoU 손실 가중치
+        """
+        super().__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.mse = nn.MSELoss()
+
+    def forward(self, pred, target):
+        """
+        pred, target: (B, 4) → (cx, cy, w, h) 형식의 grasp bbox
+        """
+        mse_loss = self.mse(pred, target)
+        iou = self.bbox_iou(pred, target).mean()
+        iou_loss = 1.0 - iou
+        return self.alpha * mse_loss + self.beta * iou_loss
+
+    @staticmethod
+    def bbox_iou(box1, box2, eps=1e-7):
+        # box format: (cx, cy, w, h)
+        b1_x1 = box1[:, 0] - box1[:, 2] / 2
+        b1_y1 = box1[:, 1] - box1[:, 3] / 2
+        b1_x2 = box1[:, 0] + box1[:, 2] / 2
+        b1_y2 = box1[:, 1] + box1[:, 3] / 2
+        b2_x1 = box2[:, 0] - box2[:, 2] / 2
+        b2_y1 = box2[:, 1] - box2[:, 3] / 2
+        b2_x2 = box2[:, 0] + box2[:, 2] / 2
+        b2_y2 = box2[:, 1] + box2[:, 3] / 2
+
+        inter_x1 = torch.max(b1_x1, b2_x1)
+        inter_y1 = torch.max(b1_y1, b2_y1)
+        inter_x2 = torch.min(b1_x2, b2_x2)
+        inter_y2 = torch.min(b1_y2, b2_y2)
+        inter_area = (inter_x2 - inter_x1).clamp(0) * (inter_y2 - inter_y1).clamp(0)
+
+        area1 = (b1_x2 - b1_x1) * (b1_y2 - b1_y1)
+        area2 = (b2_x2 - b2_x1) * (b2_y2 - b2_y1)
+        union = area1 + area2 - inter_area + eps
+
+        return inter_area / union
+
+
 class DFLoss(nn.Module):
     """Criterion class for computing Distribution Focal Loss (DFL)."""
 

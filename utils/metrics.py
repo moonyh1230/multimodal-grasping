@@ -5,14 +5,44 @@ import numpy as np
 from shapely.geometry import Polygon
 
 
+def expand_bbox_xyxy_tensor(boxes, scale=1.2, image_size=(640, 640)):
+    """
+    Args:
+        boxes (Tensor): shape (N, 4), format: (x1, y1, x2, y2)
+        scale (float): expansion scale factor
+        image_size (tuple): (W, H)
+
+    Returns:
+        expanded_boxes (Tensor): shape (N, 4), format: (x1, y1, x2, y2)
+    """
+    cls, x1, y1, x2, y2 = boxes.unbind(-1)
+    cx = (x1 + x2) / 2
+    cy = (y1 + y2) / 2
+    w = x2 - x1
+    h = y2 - y1
+
+    new_w = w * scale
+    new_h = h * scale
+
+    new_x1 = (cx - new_w / 2).clamp(min=0, max=image_size[0])
+    new_y1 = (cy - new_h / 2).clamp(min=0, max=image_size[1])
+    new_x2 = (cx + new_w / 2).clamp(min=0, max=image_size[0])
+    new_y2 = (cy + new_h / 2).clamp(min=0, max=image_size[1])
+
+    return torch.stack([cls, new_x1, new_y1, new_x2, new_y2], dim=-1)
+
+
 def grasp_iou(pred_box, gt_box, img_size=640):
     """
     pred_box, gt_box: (cx, cy, w, h, sinθ), normalized 0~1
     """
-    pred_cx, pred_cy, pred_w, pred_h, pred_sin_theta = pred_box
+    pred_cx, pred_cy, pred_w, pred_h, pred_sin_theta, pred_cos_theta = pred_box
     gt_cx, gt_cy, gt_w, gt_h, gt_sin_theta = gt_box
 
-    pred_theta = math.degrees(math.asin(pred_sin_theta))
+    pred_angle_rad = math.atan2(pred_sin_theta, pred_cos_theta)
+    pred_theta = math.degrees(pred_angle_rad) % 360
+
+    # pred_theta = math.degrees(math.asin(pred_sin_theta))
     gt_theta = math.degrees(math.asin(gt_sin_theta))
 
     pred_theta = (90 * (1 if pred_theta >= 0 else -1)) - pred_theta
@@ -51,7 +81,9 @@ def evaluate_grasp(pred_box, gt_box, img_size=640):
     pred_box, gt_box: (cx, cy, w, h, sinθ)
     """
     iou = grasp_iou(pred_box, gt_box, img_size=img_size)
-    pred_theta = math.degrees(math.asin(pred_box[-1]))
+    pred_angle_rad = math.atan2(pred_box[-2], pred_box[-1])
+    pred_theta = math.degrees(pred_angle_rad) % 360
+    # pred_theta = math.degrees(math.asin(pred_box[-1]))
     gt_theta = math.degrees(math.asin(gt_box[-1]))
 
     angle_diff = abs(pred_theta - gt_theta)
