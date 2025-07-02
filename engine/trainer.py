@@ -25,9 +25,10 @@ class LitGrasp(pl.LightningModule):
         classes_name,
         lr=0.001,
         freeze_seg=False,
-        unfreeze_at_epoch=20,
         img_size=640,
-        optim="SGD",
+        optim="AdamW",
+        scheduler="StepLR",
+        visualize=True,
     ):
         super().__init__()
         self.seg = seg
@@ -35,22 +36,22 @@ class LitGrasp(pl.LightningModule):
         self.classes_name = classes_name
         self.lr = lr
         self.freeze_seg = freeze_seg
-        self.unfreeze_at_epoch = unfreeze_at_epoch
         self.alpha = 2
         self.beta = 1
         self.gamma = 1
         self.val_outputs = []
         self.img_size = img_size
-        self.save_hyperparameters(ignore=["seg", "grasp"])
         self.optim = optim
+        self.scheduler = scheduler
+        self.visualize = visualize
 
         # Epoch level metrics
         self.backbone_loss = None
         self.seg_loss = None
 
         self.grasp_loss = GraspBBoxLoss(
-            alpha=0.5,
-            beta=0.5,
+            alpha=0,
+            beta=1,
         )
 
         always_freeze_names = [".dfl"]
@@ -64,10 +65,11 @@ class LitGrasp(pl.LightningModule):
             for p in self.seg.parameters():
                 p.requires_grad = False
 
+        self.save_hyperparameters(ignore=["seg", "grasp", "classes_name"])
+
     def forward(self, batch):
         seg_loss, feats = self.seg.custom_forward(batch["img"])
-        batch_loss = seg_loss[0]
-        loss_items = seg_loss[1]
+        pred_res, feats, preds = self.seg.custom_forward(imgs)
 
         boxes = batch["bboxes"]
 
@@ -94,14 +96,6 @@ class LitGrasp(pl.LightningModule):
 
         self.backbone_loss = backbone_losses[0].sum()
         self.loss_items = backbone_losses[1]
-
-        self.seg_loss = (
-            (self.seg_loss * batch_idx + self.loss_items) / (batch_idx + 1)
-            if self.seg_loss is not None
-            else self.loss_items
-        )
-
-        self.log("train_backbone_loss", self.backbone_loss)
 
         boxes = torch.cat(
             [
@@ -133,7 +127,17 @@ class LitGrasp(pl.LightningModule):
         self.log("train_loss_angle", loss_angle)
         self.log("train_loss_class", loss_class)
         self.log("train_loss", total_loss)
-        self.log("learning_rate", self.lr, on_step=False, on_epoch=True)
+
+        if not self.freeze_seg:
+            self.log_dict(
+                {
+                    "train_loss_backbone_tot": self.backbone_loss,
+                    "train_loss_bbox": self.loss_items[0],
+                    "train_loss_seg": self.loss_items[1],
+                    "train_loss_cls": self.loss_items[2],
+                    "train_loss_dfl": self.loss_items[3],
+                }
+            )
 
         return total_loss
 
@@ -141,9 +145,11 @@ class LitGrasp(pl.LightningModule):
         imgs = batch["img"]
         grasps_gt = batch["grasps"]
         classes_gt = batch["cls"]
+        batch_num = batch["batch_idx"]
+        total_boxes = batch_num.shape[0]
 
         pred_res, feats, preds = self.seg.custom_forward(imgs)
-        val_seg_loss, _ = self.seg.v8segloss(preds[1], batch)
+        val_seg_loss, val_seg_loss_item = self.seg.v8segloss(preds[1], batch)
 
         val_backbone_loss = val_seg_loss.sum()
 
@@ -155,29 +161,60 @@ class LitGrasp(pl.LightningModule):
 
         scale_tensor = imgsz[[1, 0, 1, 0]]
 
-        boxes = [
-            (
-                torch.cat(
-                    [
-                        (torch.ones(rt.shape[0], 1) * bn).to(self.device),
-                        rt[:, :4],
-                    ],
-                    dim=1,
-                )
-                if rt.sum() != 0
-                else torch.cat(
-                    [
-                        (torch.ones(rt.shape[0] + 1, 1) * bn).to(self.device),
-                        torch.zeros(rt.shape[0] + 1, 4).to(self.device),
-                    ],
-                    dim=1,
-                )
-            )
-            for bn, rt in enumerate(pred_res)
-        ]
+        boxes = []
+        batch_det_count = []
+        fails = []
+        for bn, rt in enumerate(pred_res):
+            box = []
+            for det_n, rt_n in enumerate(rt if rt.sum() != 0 else torch.zeros(1, 1)):
+                if rt_n.sum() != 0:
+                    box.append(
+                        torch.cat(
+                            [
+                                (torch.ones(1) * bn).to(self.device),
+                                rt_n[:4],
+                            ],
+                            dim=0,
+                        )
+                    )
+                else:
+                    box.append(
+                        torch.cat(
+                            [
+                                (torch.ones(1) * bn).to(self.device),
+                                torch.zeros(4).to(self.device),
+                            ],
+                            dim=0,
+                        )
+                    )
+                    fails.append((bn, det_n))
+            batch_det_count.append(det_n + 1)
+            boxes.append(torch.cat(box, dim=0)[None, :])
 
         boxes = torch.cat(boxes, dim=0).type(feats[0].dtype).to(self.device)
         pred_grasp_box, pred_angle, pred_class = self.grasp(feats, boxes)
+
+        fails_count = len(fails)
+        if fails_count > 0:
+            fails_embed = []
+            for bn, det_n in fails:
+                for i in range(batch_det_count[bn]):
+                    if i == det_n:
+                        fails_embed.append(sum(batch_det_count[:bn]) + det_n)
+
+            fails_embed_tensor = torch.tensor(fails_embed, device=self.device)
+            grasps_gt = grasps_gt[
+                ~torch.isin(
+                    torch.arange(grasps_gt.size(0), device=self.device),
+                    fails_embed_tensor.to("cuda"),
+                )
+            ]
+            classes_gt = classes_gt[
+                ~torch.isin(
+                    torch.arange(classes_gt.size(0), device=self.device),
+                    fails_embed_tensor.to("cuda"),
+                )
+            ]
 
         loss_grasp_box = self.grasp_loss(pred_grasp_box, grasps_gt[:, :4])
         # loss_grasp_box = F.mse_loss(pred_grasp_box, grasps_gt[:, :4])
@@ -194,11 +231,23 @@ class LitGrasp(pl.LightningModule):
         pred_combined = torch.cat([pred_grasp_box, pred_angle], dim=1)  # (B, 6)
         gt_combined = torch.cat([grasps_gt[:, :4], grasps_gt[:, 4:5]], dim=1)
 
-        self.log("val_backbone_loss", val_backbone_loss, on_step=False, on_epoch=True)
         self.log("val_loss_box", loss_grasp_box, on_step=False, on_epoch=True)
         self.log("val_loss_angle", loss_angle, on_step=False, on_epoch=True)
         self.log("val_loss_class", loss_class, on_step=False, on_epoch=True)
         self.log("val_loss", val_loss, on_step=False, on_epoch=True)
+
+        if not self.freeze_seg:
+            self.log_dict(
+                {
+                    "val_loss_backbone_tot": val_backbone_loss,
+                    "val_loss_bbox": val_seg_loss_item[0],
+                    "val_loss_seg": val_seg_loss_item[1],
+                    "val_loss_cls": val_seg_loss_item[2],
+                    "val_loss_dfl": val_seg_loss_item[3],
+                },
+                on_step=False,
+                on_epoch=True,
+            )
 
         self.val_outputs.append(
             {
@@ -206,13 +255,16 @@ class LitGrasp(pl.LightningModule):
                 "pred_box": pred_combined.detach().cpu(),
                 "gt_class": classes_gt.detach().cpu(),
                 "gt_box": gt_combined.detach().cpu(),
+                "total_boxes": total_boxes,
+                "failed_boxes": fails_count,
             }
         )
 
-        if batch_idx % 5 == 0:
-            self.visualize_grasp(
-                imgs, pred_grasp_box, pred_angle, pred_class, batch_idx, boxes
-            )
+        if batch_idx % 5 == 0 and self.visualize:
+            if total_boxes - fails_count > 3:
+                self.visualize_grasp(
+                    imgs, pred_grasp_box, pred_angle, pred_class, batch_idx, boxes
+                )
 
         return val_loss
 
@@ -221,42 +273,53 @@ class LitGrasp(pl.LightningModule):
         pred_boxes = torch.cat([o["pred_box"] for o in self.val_outputs], dim=0)
         gt_classes = torch.cat([o["gt_class"] for o in self.val_outputs], dim=0)
         gt_boxes = torch.cat([o["gt_box"] for o in self.val_outputs], dim=0)
+        total_boxes = sum([o["total_boxes"] for o in self.val_outputs])
+        fails_count = sum([o["failed_boxes"] for o in self.val_outputs])
 
-        Cacc, Lacc, Dacc = compute_metrics(
-            pred_classes, pred_boxes, gt_classes, gt_boxes
+        Cacc, Lacc, Dacc, suc_rate = compute_metrics(
+            pred_classes, pred_boxes, gt_classes, gt_boxes, total_boxes, fails_count
         )
 
         self.log("val_Cacc", Cacc, prog_bar=False)
         self.log("val_Lacc", Lacc, prog_bar=False)
         self.log("val_Dacc", Dacc, prog_bar=False)
+        self.log("val_suc_rate", suc_rate, prog_bar=False)
 
         self.val_outputs.clear()
 
     def configure_optimizers(self):
+        batch_num = self.trainer.num_training_batches
+        n_epochs = self.trainer.max_epochs
+
+        num_warmup_steps = batch_num * 2
+        num_total_steps = batch_num * n_epochs
+
         optimizer = (
             torch.optim.AdamW(
-                (list(self.seg.parameters()) + list(self.grasp.parameters())),
+                filter(lambda p: p.requires_grad, self.parameters()),
                 lr=self.lr,
             )
             if self.optim == "AdamW"
             else torch.optim.SGD(
-                list(list(self.seg.parameters()) + list(self.grasp.parameters())),
+                filter(lambda p: p.requires_grad, self.parameters()),
                 lr=self.lr,
                 momentum=0.9,
             )
         )
-        scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer, step_size=10, gamma=0.5, last_epoch=-1
+        scheduler = (
+            torch.optim.lr_scheduler.StepLR(
+                optimizer, step_size=10, gamma=0.5, last_epoch=-1
+            )
+            if self.scheduler == "StepLR"
+            else torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                optimizer,
+                T_0=20,
+                T_mult=1,
+                eta_min=0.00001,
+            )
         )
 
-        return optimizer, scheduler
-
-    # def on_train_epoch_start(self):
-    #     if self.freeze_seg and self.current_epoch == self.unfreeze_at_epoch:
-    #         print(f"Unfreezing segmentation backbone at epoch {self.current_epoch}")
-    #         for p in self.seg.model.parameters():
-    #             p.requires_grad = True
-    #         self.freeze_seg = False
+        return {"optimizer": optimizer, "lr_scheduler": scheduler}
 
     def visualize_grasp(self, imgs, pred_box, pred_angle, pred_class, batch_idx, boxes):
         imgs = imgs.detach().cpu()

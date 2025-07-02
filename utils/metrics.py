@@ -93,13 +93,23 @@ def evaluate_grasp(pred_box, gt_box, img_size=640):
     return (iou > 0.25) and (angle_diff < 30)
 
 
-def compute_metrics(pred_class_logits, pred_boxes, gt_classes, gt_boxes, img_size=640):
+def compute_metrics(
+    pred_class_logits,
+    pred_boxes,
+    gt_classes,
+    gt_boxes,
+    total_boxes,
+    fails_count,
+    img_size=640,
+):
     """
     Args:
         pred_class_logits: [N, num_classes] (raw logits)
         pred_boxes: [N, 5] (normalized outputs)
         gt_classes: [N]
         gt_boxes: [N, 5]
+        total_boxes: number of boxes in the image
+        fails_count: number of failed boxes in the image
     Returns:
         Cacc, Lacc, Dacc
     """
@@ -124,8 +134,9 @@ def compute_metrics(pred_class_logits, pred_boxes, gt_classes, gt_boxes, img_siz
         if correct_class and correct_grasp:
             Dacc += 1
 
-    Cacc /= total
-    Lacc /= total
-    Dacc /= total
+    Cacc /= total_boxes
+    Lacc /= total_boxes
+    Dacc /= total_boxes
+    det_acc = 1 - (fails_count / total_boxes)
 
-    return Cacc, Lacc, Dacc
+    return Cacc, Lacc, Dacc, det_acc

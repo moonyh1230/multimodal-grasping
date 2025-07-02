@@ -3,7 +3,11 @@ from pytorch_lightning import Trainer
 from models.seg_backbone import create_yolov8_model
 from models.grasp_head_roi import GraspHeadROI
 from data.custom_txt_dataset import GraspTxtDataset
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+from pytorch_lightning.callbacks import (
+    ModelCheckpoint,
+    EarlyStopping,
+    LearningRateMonitor,
+)
 from engine.trainer import LitGrasp
 from datetime import datetime
 import pytorch_lightning as pl
@@ -47,11 +51,22 @@ def my_collate_fn(batch):
 
 def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    training = True  # True: train, False: test
+
+    # training arguments
+    training = False  # True: train, False: test
+    lr = 0.001  # learning rate
+    bs = 32  # batch size
+    max_epochs = 200  # max epochs
+    patience = 50  # early stopping patience
+    optim = "AdamW"  # optimizer
+    workers = 8  # number of workers
+    scheduler = "CAWR"  # learning rate scheduler
+    visualize = True  # visualize training process
+
     save_dir = (
         os.path.join("checkpoints", timestamp)
         if training
-        else os.path.join("stage_2", timestamp)
+        else os.path.join("checkpoints", timestamp + "_stage_2")
     )
     feat_dim = [20, 40, 80]  # YOLOv8m-seg에서 사용한 feature map 크기
     feat_ch = [576, 384, 192]  # YOLOv8m-seg에서 사용한 feature map 채널 수
@@ -87,13 +102,31 @@ def main():
     )
 
     if training:
-        lit = LitGrasp(seg, grasp, classes_name=classes, freeze_seg=True)
-    else:
-        lit = LitGrasp.load_from_checkpoint(
-            checkpoint_path="checkpoints/20250512_183325/lightning_logs/version_0/checkpoints/epoch=023-val_Dacc=0.1513-best.ckpt",
+        lit = LitGrasp(
             seg=seg,
             grasp=grasp,
             classes_name=classes,
+            lr=lr,
+            freeze_seg=True,
+            optim=optim,
+            scheduler=scheduler,
+            visualize=visualize,
+        )
+    else:
+        lit = LitGrasp(
+            seg=seg,
+            grasp=grasp,
+            classes_name=classes,
+            lr=lr,
+            freeze_seg=False,
+            optim=optim,
+            scheduler=scheduler,
+            visualize=visualize,
+        )
+        lit.load_state_dict(
+            torch.load(
+                "checkpoints/20250616_145122/lightning_logs/version_0/checkpoints/epoch=187-val_Dacc=0.3445-best.ckpt",
+            )["state_dict"],
         )
 
     ds = GraspTxtDataset(
@@ -102,23 +135,25 @@ def main():
     )
 
     n_total = len(ds)
+    print(f"Total dataset size: {n_total}")
+
     n_val = int(n_total * 0.2)
     n_train = n_total - n_val
     train_dataset, val_dataset = random_split(ds, [n_train, n_val])
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=8,
+        batch_size=bs,
         shuffle=True,
-        num_workers=8,
+        num_workers=workers,
         collate_fn=my_collate_fn,
         persistent_workers=True,
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=8,
+        batch_size=bs,
         shuffle=False,
-        num_workers=8,
+        num_workers=workers,
         collate_fn=my_collate_fn,
         persistent_workers=True,
     )
@@ -135,17 +170,19 @@ def main():
 
     # ✅ EarlyStopping 콜백
     early_stop_callback = EarlyStopping(
-        monitor="val_Dacc", patience=30, verbose=True, mode="max"
+        monitor="val_Dacc", patience=patience, verbose=True, mode="max"
     )
 
+    lr_monitor = LearningRateMonitor(logging_interval="epoch")
+
     trainer = Trainer(
-        max_epochs=300,
+        max_epochs=max_epochs,
         accelerator="gpu",
         devices=1,
         log_every_n_steps=20,
-        precision="16-mixed",  # fp16 mixed precision for faster training
+        precision="32-true",  # fp16 mixed precision for faster training
         default_root_dir=save_dir,
-        callbacks=[checkpoint_callback, early_stop_callback],
+        callbacks=[checkpoint_callback, lr_monitor],
     )
     trainer.fit(lit, train_dataloaders=train_loader, val_dataloaders=val_loader)
 

@@ -102,8 +102,8 @@ def create_yolov8_model(model_name_or_path):
     args = get_cfg(
         overrides={
             "model": model_name_or_path,
-            "conf": 0.20,
-            "iou": 0.30,
+            "conf": 0.25,
+            "iou": 0.45,
             "save": False,
             "rect": True,
             "max_det": 20,
@@ -115,11 +115,5 @@ def create_yolov8_model(model_name_or_path):
         model.to("cuda")
 
     model.v8segloss = v8SegmentationLoss(model)
-
-    # custom = {"conf": 0.25, "batch": 1, "save": False, "mode": "predict", "rect": True}
-    # pred_args = {**model.overrides, **custom}
-    # model.predictor = model._smart_load("predictor")(
-    #     overrides=pred_args, _callbacks=model.callbacks
-    # )
     model.train()
     return model
