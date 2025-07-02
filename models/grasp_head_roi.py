@@ -63,24 +63,29 @@ class GraspAndClassHead(nn.Module):
 class GraspHeadROI(nn.Module):
     def __init__(
         self,
-        device="cuda",
-        in_channels=192,
-        in_class_channels=576,
+        grasp_feat_spec: tuple[int, int],  # (channels, size) for grasp features (e.g., feats[0])
+        class_feat_spec: tuple[int, int],  # (channels, size) for class features (e.g., feats[2])
         num_classes=15,
-        feat_size=80,
+        device="cuda",
     ):
-
         super().__init__()
         self.device = device
+
+        grasp_in_channels, grasp_feat_size = grasp_feat_spec
+        class_in_channels, class_feat_size = class_feat_spec
+
+        # 각 피처맵에 맞는 정확한 spatial_scale 계산
         self.roi_align = ops.RoIAlign(
-            output_size=(7, 7), spatial_scale=feat_size / 640, sampling_ratio=2
+            output_size=(7, 7), spatial_scale=grasp_feat_size / 640, sampling_ratio=2
         )
         self.roi_align_class = ops.RoIAlign(
-            output_size=(7, 7), spatial_scale=(feat_size / 4) / 640, sampling_ratio=2
+            output_size=(7, 7), spatial_scale=class_feat_size / 640, sampling_ratio=2
         )
+
+        # 정확한 채널 수로 Head 초기화
         self.centroid_head = GraspAndClassHead(
-            in_channels=in_channels,
-            in_class_channels=in_class_channels,
+            in_channels=grasp_in_channels,
+            in_class_channels=class_in_channels,
             num_classes=num_classes,
         )
 

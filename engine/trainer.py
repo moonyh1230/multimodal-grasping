@@ -80,7 +80,7 @@ class LitGrasp(pl.LightningModule):
         grasps_gt = batch["grasps"]
         classes_gt = batch["cls"]
 
-        backbone_losses, feats = self.seg.custom_forward(batch)
+        backbone_losses, feats, backbone_bboxes = self.seg.custom_forward(batch)
 
         dtype = feats[0].dtype
         imgsz = (
@@ -88,26 +88,63 @@ class LitGrasp(pl.LightningModule):
             * self.seg.stride[0]
         )  # image size (h,w)
 
-        scale_tensor = imgsz[[1, 0, 1, 0]]
+        boxes = []
+        batch_det_count = []
+        fails = []
+        for bn, rt in enumerate(backbone_bboxes):
+            box = []
+            for det_n, rt_n in enumerate(rt if rt.sum() != 0 else torch.zeros(1, 1)):
+                if rt_n.sum() != 0:
+                    box.append(
+                        torch.cat(
+                            [
+                                (torch.ones(1) * bn).to(self.device),
+                                rt_n[:4],
+                            ],
+                            dim=0,
+                        )
+                    )
+                else:
+                    box.append(
+                        torch.cat(
+                            [
+                                (torch.ones(1) * bn).to(self.device),
+                                torch.zeros(4).to(self.device),
+                            ],
+                            dim=0,
+                        )
+                    )
+                    fails.append((bn, det_n))
+            batch_det_count.append(det_n + 1)
+            boxes.append(torch.cat(box, dim=0)[None, :])
 
-        xyxy = xywh2xyxy(batch["bboxes"].mul_(scale_tensor))
+        boxes = torch.cat(boxes, dim=0).type(feats[0].dtype).to(self.device)
+        pred_grasp_box, pred_angle, pred_class = self.grasp(feats, boxes)
 
-        # box_unnormalized = xywh2xyxy(batch["bboxes"].mul_(scale_tensor))
+        fails_count = len(fails)
+        if fails_count > 0:
+            fails_embed = []
+            for bn, det_n in fails:
+                for i in range(batch_det_count[bn]):
+                    if i == det_n:
+                        fails_embed.append(sum(batch_det_count[:bn]) + det_n)
+
+            fails_embed_tensor = torch.tensor(fails_embed, device=self.device)
+            grasps_gt = grasps_gt[
+                ~torch.isin(
+                    torch.arange(grasps_gt.size(0), device=self.device),
+                    fails_embed_tensor.to("cuda"),
+                )
+            ]
+            classes_gt = classes_gt[
+                ~torch.isin(
+                    torch.arange(classes_gt.size(0), device=self.device),
+                    fails_embed_tensor.to("cuda"),
+                )
+            ]
 
         self.backbone_loss = backbone_losses[0].sum()
         self.loss_items = backbone_losses[1]
-
-        boxes = torch.cat(
-            [
-                batch["batch_idx"][:, None],
-                xyxy.type(feats[0].dtype).to(self.device),
-            ],
-            dim=1,
-        )
-
-        pred_grasp_box, pred_angle, pred_class = self.grasp(
-            feats, boxes
-        )  # feats[0] (b, 192, 80, 80)
 
         loss_grasp_box = self.grasp_loss(pred_grasp_box, grasps_gt[:, :4])
         # loss_grasp_box = F.mse_loss(pred_grasp_box, grasps_gt[:, :4])
@@ -149,9 +186,10 @@ class LitGrasp(pl.LightningModule):
         total_boxes = batch_num.shape[0]
 
         pred_res, feats, preds = self.seg.custom_forward(imgs)
-        val_seg_loss, val_seg_loss_item = self.seg.v8segloss(preds[1], batch)
+        val_seg_loss, _ = self.seg.v8segloss(preds[1], batch)
 
-        val_backbone_loss = val_seg_loss.sum()
+        val_seg_loss_item = val_seg_loss[1]
+        val_backbone_loss = val_seg_loss[0].sum()
 
         dtype = feats[0].dtype
         imgsz = (

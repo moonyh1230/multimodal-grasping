@@ -1,3 +1,6 @@
+import sys
+sys.path.append('.')
+
 from torch.utils.data import DataLoader, random_split
 from pytorch_lightning import Trainer
 from models.seg_backbone import create_yolov8_model
@@ -53,7 +56,7 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # training arguments
-    training = False  # True: train, False: test
+    training = True  # True: train, False: test
     lr = 0.001  # learning rate
     bs = 32  # batch size
     max_epochs = 200  # max epochs
@@ -68,9 +71,13 @@ def main():
         if training
         else os.path.join("checkpoints", timestamp + "_stage_2")
     )
-    feat_dim = [20, 40, 80]  # YOLOv8m-seg에서 사용한 feature map 크기
-    feat_ch = [576, 384, 192]  # YOLOv8m-seg에서 사용한 feature map 채널 수
-    feat_args = 2
+    # YOLOv8m-seg 피처맵 스펙 정의: (채널 수, 피처 크기)
+    # feats[0]: 80x80, feats[1]: 40x40, feats[2]: 20x20
+    yolo_feature_specs = {
+        "p3": (192, 80),  # Grasping에 사용할 고해상도 피처 (feats[0])
+        "p4": (384, 40),  # 중간 해상도 피처 (feats[1])
+        "p5": (576, 20),  # Classification에 사용할 저해상도 피처 (feats[2])
+    }
 
     classes = {
         0: "clamp_Aillis",
@@ -98,7 +105,9 @@ def main():
     seg = create_yolov8_model("sg_15class_0429.pt")  # YOLOv8m-seg fine-tuned 모델
 
     grasp = GraspHeadROI(
-        in_channels=feat_ch[feat_args], num_classes=15, feat_size=feat_dim[feat_args]
+        grasp_feat_spec=yolo_feature_specs["p3"],
+        class_feat_spec=yolo_feature_specs["p5"],
+        num_classes=len(classes),
     )
 
     if training:

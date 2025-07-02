@@ -38,7 +38,7 @@ class YOLOv8DetectionAndFeatureExtractorModel(SegmentationModel):
     def custom_forward(self, x):
         if isinstance(x, dict):
             pred, feats = self._custom_forward(x["img"])
-            return self.v8segloss(pred, x), feats
+            return self.v8segloss(pred[1], x), feats, self.postprocess(pred[0])
         else:
             pred, feats = self._custom_forward(x)
             return self.postprocess(pred[0]), feats, pred
