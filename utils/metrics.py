@@ -37,13 +37,12 @@ def grasp_iou(pred_box, gt_box, img_size=640):
     pred_box, gt_box: (cx, cy, w, h, sinθ), normalized 0~1
     """
     pred_cx, pred_cy, pred_w, pred_h, pred_sin_theta, pred_cos_theta = pred_box
-    gt_cx, gt_cy, gt_w, gt_h, gt_sin_theta = gt_box
+    gt_cx, gt_cy, gt_w, gt_h, gt_theta_rad = gt_box
 
     pred_angle_rad = math.atan2(pred_sin_theta, pred_cos_theta)
     pred_theta = math.degrees(pred_angle_rad) % 360
 
-    # pred_theta = math.degrees(math.asin(pred_sin_theta))
-    gt_theta = math.degrees(math.asin(gt_sin_theta))
+    gt_theta = math.degrees(gt_theta_rad)
 
     pred_theta = (90 * (1 if pred_theta >= 0 else -1)) - pred_theta
     gt_theta = (90 * (1 if gt_theta >= 0 else -1)) - gt_theta
@@ -83,8 +82,7 @@ def evaluate_grasp(pred_box, gt_box, img_size=640):
     iou = grasp_iou(pred_box, gt_box, img_size=img_size)
     pred_angle_rad = math.atan2(pred_box[-2], pred_box[-1])
     pred_theta = math.degrees(pred_angle_rad) % 360
-    # pred_theta = math.degrees(math.asin(pred_box[-1]))
-    gt_theta = math.degrees(math.asin(gt_box[-1]))
+    gt_theta = math.degrees(gt_box[-1])
 
     angle_diff = abs(pred_theta - gt_theta)
     if angle_diff > 180:

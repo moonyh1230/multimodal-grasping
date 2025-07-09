@@ -20,7 +20,7 @@ class YOLOv8DetectionAndFeatureExtractorModel(SegmentationModel):
         self.v8segloss = None
         self.imgsz = imgsz
 
-    def postprocess(self, pred, max_det=1):
+    def postprocess(self, pred, max_det=10):
         preds = ops.non_max_suppression(
             pred,
             self.args.conf,

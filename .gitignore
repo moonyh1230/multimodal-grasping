@@ -20,3 +20,4 @@ models/pooler.py
 layers/
 scripts/test_model.py
 GEMINI_CONVERSATION.md
+output/

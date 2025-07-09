@@ -66,15 +66,7 @@ class GraspTxtDataset(Dataset):
             w = round(w / self.img_size[0], decPlaces)
             h = round(h / self.img_size[1], decPlaces)
 
-            theta = math.degrees(theta)
-
-            flg = 1
-            if theta < 0:
-                flg = -1
-            theta = math.radians(90 * flg - theta)
-            alpha = round(math.sin(theta), decPlaces)
-
-            grasps.append([cx, cy, w, h, alpha])  # [cx, cy, w, h, sinθ]
+            grasps.append([cx, cy, w, h, theta])  # [cx, cy, w, h, theta_rad]
             classes.append(class_id)  # class_id
             bboxes.append([bx, by, bw, bh])
             masks.append(mask_img)

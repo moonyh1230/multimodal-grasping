@@ -6,34 +6,32 @@ from utils.metrics import expand_bbox_xyxy_tensor
 
 
 class GraspAndClassHead(nn.Module):
-    def __init__(self, in_channels=576, in_class_channels=576, num_classes=15):
+    """
+    RoIAlign으로 추출된 피처맵으로부터 Grasp과 Class를 예측하는 헤드.
+    공간 정보를 최대한 보존하기 위해 Conv 레이어를 먼저 통과한 후,
+    AdaptiveAvgPool2d를 사용하여 최종 예측을 수행.
+    """
+    def __init__(self, grasp_in_channels=192, class_in_channels=576, num_classes=15):
         super().__init__()
-        self.shared_feature = nn.Sequential(
-            nn.Conv2d(in_channels, 256, kernel_size=3, padding=1),  # (b, 256, 7, 7)
+
+        # --- Grasp 예측 브랜치 ---
+        self.grasp_conv = nn.Sequential(
+            nn.Conv2d(grasp_in_channels, 256, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(256, 128, kernel_size=3, padding=1),  # (b, 128, 7, 7)
-            nn.ReLU(inplace=True),
-            nn.Flatten(),  # (b, 128 * 7 * 7)
-            nn.Linear(128 * 7 * 7, 512),
+            nn.Conv2d(256, 128, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
         )
-
-        self.avg_pool = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),  # [N, 576, 1, 1]
-            nn.Flatten(),  # [N, 576]
-            nn.Linear(in_class_channels, 512),
+        self.grasp_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.grasp_fc = nn.Sequential(
+            nn.Linear(128, 512),
             nn.ReLU(inplace=True),
         )
-
-        # Grasp box prediction branch
         self.grasp_box_branch = nn.Sequential(
             nn.Linear(512, 256),
-            nn.LeakyReLU(negative_slope=0.1),  # ReLU(inplace=True)
+            nn.LeakyReLU(negative_slope=0.1),
             nn.Dropout(p=0.2),
             nn.Linear(256, 4),  # (cx, cy, w, h)
         )
-
-        # Grasp angle prediction branch
         self.grasp_angle_branch = nn.Sequential(
             nn.Linear(512, 256),
             nn.LeakyReLU(negative_slope=0.1),
@@ -41,21 +39,40 @@ class GraspAndClassHead(nn.Module):
             nn.Linear(256, 2),  # sin(theta), cos(theta)
         )
 
-        # Object classification branch
-        self.classification_branch = nn.Sequential(
+        # --- Class 예측 브랜치 ---
+        self.class_conv = nn.Sequential(
+            nn.Conv2d(class_in_channels, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 128, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+        )
+        self.class_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.class_fc = nn.Sequential(
+            nn.Linear(128, 512),
+            nn.ReLU(inplace=True),
             nn.Linear(512, 256),
             nn.LeakyReLU(negative_slope=0.1),
             nn.Dropout(p=0.2),
-            nn.Linear(256, num_classes),  # class logits
+            nn.Linear(256, num_classes),
         )
 
-    def forward(self, x):
-        feat = self.shared_feature(x[0])
-        class_feat = self.avg_pool(x[1])
+    def forward(self, crops):
+        grasp_crop, class_crop = crops
 
-        box = torch.sigmoid(self.grasp_box_branch(feat))  # [N, 4]
-        angle = torch.tanh(self.grasp_angle_branch(feat))  # [N, 1]
-        class_logits = self.classification_branch(class_feat)  # [N, num_classes]
+        # Grasp 예측
+        g_feat = self.grasp_conv(grasp_crop)
+        g_feat = self.grasp_pool(g_feat)
+        g_feat = torch.flatten(g_feat, 1)
+        g_feat = self.grasp_fc(g_feat)
+
+        box = torch.sigmoid(self.grasp_box_branch(g_feat))
+        angle = torch.tanh(self.grasp_angle_branch(g_feat))
+
+        # Class 예측
+        c_feat = self.class_conv(class_crop)
+        c_feat = self.class_pool(c_feat)
+        c_feat = torch.flatten(c_feat, 1)
+        class_logits = self.class_fc(c_feat)
 
         return box, angle, class_logits
 
@@ -74,18 +91,18 @@ class GraspHeadROI(nn.Module):
         grasp_in_channels, grasp_feat_size = grasp_feat_spec
         class_in_channels, class_feat_size = class_feat_spec
 
-        # 각 피처맵에 맞는 정확한 spatial_scale 계산
+        # RoIAlign 해상도를 14x14로 증가시켜 공간적 정밀도 향상
         self.roi_align = ops.RoIAlign(
-            output_size=(7, 7), spatial_scale=grasp_feat_size / 640, sampling_ratio=2
+            output_size=(14, 14), spatial_scale=grasp_feat_size / 640, sampling_ratio=2
         )
         self.roi_align_class = ops.RoIAlign(
-            output_size=(7, 7), spatial_scale=class_feat_size / 640, sampling_ratio=2
+            output_size=(14, 14), spatial_scale=class_feat_size / 640, sampling_ratio=2
         )
 
-        # 정확한 채널 수로 Head 초기화
+        # 새로운 Head 구조로 초기화
         self.centroid_head = GraspAndClassHead(
-            in_channels=grasp_in_channels,
-            in_class_channels=class_in_channels,
+            grasp_in_channels=grasp_in_channels,
+            class_in_channels=class_in_channels,
             num_classes=num_classes,
         )
 
@@ -95,20 +112,26 @@ class GraspHeadROI(nn.Module):
         h = boxes[:, 4] - boxes[:, 2]
         valid = (w > 0) & (h > 0)
         if valid.sum() == 0:
-            raise RuntimeError("No valid boxes in batch!")
+            # 유효한 박스가 없는 경우, 빈 텐서를 반환하거나 에러 처리
+            # 여기서는 간단히 빈 텐서들을 반환하여 이후 로직에서 처리되도록 함
+            return torch.empty(0, 4), torch.empty(0, 2), torch.empty(0, 15)
 
-        boxes_class = (
-            boxes[valid].type(feats[0].dtype).to(feats[0].device)
-        )  # [N, num_of_detected, 4(xyxy)]
+        # 유효한 박스만 필터링
+        valid_boxes = boxes[valid]
+
+        # RoI Align을 위한 box 형식 [batch_idx, x1, y1, x2, y2]
+        # LitGrasp에서 넘어온 boxes는 이미 [batch_idx, x1, y1, x2, y2] 형식이므로 그대로 사용
+
+        boxes_class = valid_boxes.type(feats[0].dtype).to(feats[0].device)
         boxes_grasp = expand_bbox_xyxy_tensor(
-            boxes_class.type(feats[0].dtype).to(feats[0].device),
+            boxes_class.clone(), # clone() to avoid in-place modification issues
             scale=1.3,
             image_size=(640, 640),
         )
 
-        rois = boxes_grasp
-        rois_class = boxes_class
-        crops_p3 = self.roi_align(feats[0], rois)  # [N, 576, 7, 7]
-        crops_p5 = self.roi_align_class(feats[2], rois_class)
+        # RoIAlign 수행
+        crops_p3 = self.roi_align(feats[0], boxes_grasp)
+        crops_p5 = self.roi_align_class(feats[2], boxes_class)
+
         crops = [crops_p3, crops_p5]
-        return self.centroid_head(crops)  # box, angle, class_logits
+        return self.centroid_head(crops)
