@@ -118,7 +118,7 @@ def create_yolov8_model(model_name_or_path, is_inference=False):
         overrides={
             "model": model_name_or_path,
             "conf": 0.25,
-            "iou": 0.45,
+            "iou": 0.35,
             "save": False,
             "rect": True,
             "max_det": 20,

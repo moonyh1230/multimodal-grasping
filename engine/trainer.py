@@ -231,7 +231,7 @@ class LitGrasp(pl.LightningModule):
         total_boxes = batch_num.shape[0]
 
         pred_res, feats, preds = self.seg.custom_forward(imgs)
-        val_seg_loss, _ = self.seg.v8segloss(preds[1], batch)
+        val_seg_loss = self.seg.v8segloss(preds[1], batch)
 
         val_seg_loss_item = val_seg_loss[1]
         val_backbone_loss = val_seg_loss[0].sum()
@@ -436,6 +436,10 @@ class LitGrasp(pl.LightningModule):
                 optimizer, step_size=10, gamma=0.5, last_epoch=-1
             )
             if self.scheduler == "StepLR"
+            else torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=n_epochs, eta_min=0.00001
+            )
+            if self.scheduler == "CALR"
             else torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
                 optimizer,
                 T_0=20,

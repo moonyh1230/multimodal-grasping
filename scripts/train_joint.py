@@ -1,5 +1,6 @@
 import sys
-sys.path.append('.')
+
+sys.path.append(".")
 
 from torch.utils.data import DataLoader, random_split
 from pytorch_lightning import Trainer
@@ -56,14 +57,14 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # training arguments
-    training = True  # True: train, False: test
+    training = False  # True: train, False: test
     lr = 0.001  # learning rate
     bs = 32  # batch size
     max_epochs = 200  # max epochs
     patience = 50  # early stopping patience
     optim = "AdamW"  # optimizer
     workers = 8  # number of workers
-    scheduler = "CAWR"  # learning rate scheduler
+    scheduler = "CAWR" if training else "CALR"  # learning rate scheduler
     visualize = True  # visualize training process
 
     save_dir = (
@@ -134,7 +135,7 @@ def main():
         )
         lit.load_state_dict(
             torch.load(
-                "checkpoints/20250616_145122/lightning_logs/version_0/checkpoints/epoch=187-val_Dacc=0.3445-best.ckpt",
+                "checkpoints/20250709_220531/lightning_logs/version_0/checkpoints/epoch=164-val_Dacc=0.9454-best.ckpt",
             )["state_dict"],
         )
 

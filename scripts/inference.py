@@ -9,6 +9,7 @@ from models.grasp_head_roi import GraspHeadROI
 
 # --- 설정 ---
 MODEL_CHECKPOINT = "checkpoints/20250709_220531/lightning_logs/version_0/checkpoints/epoch=164-val_Dacc=0.9454-best.ckpt"
+# MODEL_CHECKPOINT = "checkpoints/20250710_105140_stage_2/lightning_logs/version_0/checkpoints/epoch=010-val_Dacc=0.9076-best.ckpt"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 IMG_SIZE = 640
 
@@ -75,12 +76,12 @@ def preprocess_frame(frame, device):
 
     # 패딩 추가
     padded_img = np.full((target_size, target_size, 3), 114, dtype=np.uint8)
-    padded_img[pad_h:pad_h + new_h, pad_w:pad_w + new_w] = resized_img
+    padded_img[pad_h : pad_h + new_h, pad_w : pad_w + new_w] = resized_img
 
     # 텐서로 변환
     img = cv2.cvtColor(padded_img, cv2.COLOR_BGR2RGB)
     img_tensor = torch.from_numpy(img).to(device).float() / 255.0
-    
+
     return img_tensor.permute(2, 0, 1).unsqueeze(0), ratio, pad_w, pad_h
 
 
@@ -148,12 +149,16 @@ def main():
                     boxes = det_boxes_raw[:, 1:5]
                     boxes[:, [0, 2]] -= pad_w  # x좌표에서 패딩 제거
                     boxes[:, [1, 3]] -= pad_h  # y좌표에서 패딩 제거
-                    boxes[:, :] /= ratio      # 비율로 스케일링
+                    boxes[:, :] /= ratio  # 비율로 스케일링
 
                     # 원본 이미지 경계에 맞게 좌표 클리핑
-                    boxes[:, [0, 2]] = boxes[:, [0, 2]].clamp(0, original_frame.shape[1])
-                    boxes[:, [1, 3]] = boxes[:, [1, 3]].clamp(0, original_frame.shape[0])
-                    
+                    boxes[:, [0, 2]] = boxes[:, [0, 2]].clamp(
+                        0, original_frame.shape[1]
+                    )
+                    boxes[:, [1, 3]] = boxes[:, [1, 3]].clamp(
+                        0, original_frame.shape[0]
+                    )
+
                     det_boxes_scaled = boxes.round()
 
                     det_boxes_cpu = det_boxes_scaled.cpu()
@@ -162,7 +167,7 @@ def main():
                     class_logits_cpu = pred_class.cpu()
 
                     frame_to_show = visualize_results(
-                        original_frame.copy(), # 원본을 복사해서 사용
+                        original_frame.copy(),  # 원본을 복사해서 사용
                         det_boxes_cpu,
                         grasp_boxes_cpu,
                         grasp_angles_cpu,
