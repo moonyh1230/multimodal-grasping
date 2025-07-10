@@ -14,11 +14,18 @@ from utils.loss import v8SegmentationLoss
 
 class YOLOv8DetectionAndFeatureExtractorModel(SegmentationModel):
     def __init__(
-        self, cfg="yolov8n.yaml", ch=3, nc=None, verbose=False, imgsz=(640, 640)
+        self,
+        cfg="yolov8n.yaml",
+        ch=3,
+        nc=None,
+        verbose=False,
+        imgsz=(640, 640),
+        inference=False,
     ):  # model, input channels, number of classes
         super().__init__(cfg, ch, nc, verbose)
         self.v8segloss = None
         self.imgsz = imgsz
+        self.inference = inference
 
     def postprocess(self, pred, max_det=10):
         preds = ops.non_max_suppression(
@@ -38,10 +45,18 @@ class YOLOv8DetectionAndFeatureExtractorModel(SegmentationModel):
     def custom_forward(self, x):
         if isinstance(x, dict):
             pred, feats = self._custom_forward(x["img"])
-            return self.v8segloss(pred[1], x), feats, self.postprocess(pred[0])
+            return (
+                self.v8segloss(pred[1], x),
+                feats,
+                self.postprocess(pred[0], max_det=1 if not self.inference else 10),
+            )
         else:
             pred, feats = self._custom_forward(x)
-            return self.postprocess(pred[0]), feats, pred
+            return (
+                self.postprocess(pred[0], max_det=1 if not self.inference else 10),
+                feats,
+                pred,
+            )
 
     def _custom_forward(self, x):
         """
@@ -79,7 +94,7 @@ class YOLOv8DetectionAndFeatureExtractorModel(SegmentationModel):
         return x, feature_maps
 
 
-def create_yolov8_model(model_name_or_path):
+def create_yolov8_model(model_name_or_path, is_inference=False):
     from ultralytics.nn.tasks import attempt_load_one_weight
     from ultralytics.cfg import get_cfg
 
@@ -91,7 +106,7 @@ def create_yolov8_model(model_name_or_path):
         cfg = model_name_or_path
 
     model = YOLOv8DetectionAndFeatureExtractorModel(
-        cfg, verbose=False, ch=cfg["ch"], nc=cfg["nc"]
+        cfg, verbose=False, ch=cfg["ch"], nc=cfg["nc"], inference=is_inference
     )
 
     if weights:

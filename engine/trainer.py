@@ -143,23 +143,55 @@ class LitGrasp(pl.LightningModule):
                         fails_embed.append(sum(batch_det_count[:bn]) + det_n)
 
             fails_embed_tensor = torch.tensor(fails_embed, device=self.device)
-            grasps_gt = grasps_gt[
-                ~torch.isin(
-                    torch.arange(grasps_gt.size(0), device=self.device),
-                    fails_embed_tensor.to("cuda"),
-                )
-            ]
-            classes_gt = classes_gt[
-                ~torch.isin(
-                    torch.arange(classes_gt.size(0), device=self.device),
-                    fails_embed_tensor.to("cuda"),
-                )
-            ]
+
+            # Create a mask to keep successful detections
+            keep_mask = ~torch.isin(
+                torch.arange(grasps_gt.size(0), device=self.device),
+                fails_embed_tensor.to("cuda"),
+            )
+
+            # Apply the mask to ground truth and boxes, predictions are already filtered
+            grasps_gt = grasps_gt[keep_mask]
+            classes_gt = classes_gt[keep_mask]
+            boxes = boxes[keep_mask]
 
         self.backbone_loss = backbone_losses[0].sum()
         self.loss_items = backbone_losses[1]
 
-        loss_grasp_box = self.grasp_loss(pred_grasp_box, grasps_gt[:, :4])
+        # Convert absolute GT grasps to be relative to the ROI boxes
+        # Note: `boxes` here still contains failed detections, but they should be filtered out
+        # by the existing `fails_count` logic before loss calculation.
+        # We perform this conversion before filtering to align with the predictions.
+        roi_boxes = boxes
+        roi_x1, roi_y1, roi_x2, roi_y2 = (
+            roi_boxes[:, 1],
+            roi_boxes[:, 2],
+            roi_boxes[:, 3],
+            roi_boxes[:, 4],
+        )
+        roi_w = roi_x2 - roi_x1
+        roi_h = roi_y2 - roi_y1
+
+        # Avoid division by zero
+        epsilon = 1e-6
+        roi_w = roi_w.clamp(min=epsilon)
+        roi_h = roi_h.clamp(min=epsilon)
+
+        gt_cx_abs, gt_cy_abs, gt_w_abs, gt_h_abs = (
+            grasps_gt[:, 0] * self.img_size,
+            grasps_gt[:, 1] * self.img_size,
+            grasps_gt[:, 2] * self.img_size,
+            grasps_gt[:, 3] * self.img_size,
+        )
+
+        gt_cx_rel = (gt_cx_abs - roi_x1) / roi_w
+        gt_cy_rel = (gt_cy_abs - roi_y1) / roi_h
+        gt_w_rel = gt_w_abs / roi_w
+        gt_h_rel = gt_h_abs / roi_h
+
+        grasps_gt_rel = torch.stack([gt_cx_rel, gt_cy_rel, gt_w_rel, gt_h_rel], dim=1)
+
+        loss_grasp_box = self.grasp_loss(pred_grasp_box, grasps_gt_rel)
         # loss_grasp_box = F.mse_loss(pred_grasp_box, grasps_gt[:, :4])
         loss_angle = angle_loss(pred_angle, grasps_gt[:, 4:5])
         loss_class = F.cross_entropy(pred_class, classes_gt)
@@ -254,21 +286,48 @@ class LitGrasp(pl.LightningModule):
                         fails_embed.append(sum(batch_det_count[:bn]) + det_n)
 
             fails_embed_tensor = torch.tensor(fails_embed, device=self.device)
-            grasps_gt = grasps_gt[
-                ~torch.isin(
-                    torch.arange(grasps_gt.size(0), device=self.device),
-                    fails_embed_tensor.to("cuda"),
-                )
-            ]
-            classes_gt = classes_gt[
-                ~torch.isin(
-                    torch.arange(classes_gt.size(0), device=self.device),
-                    fails_embed_tensor.to("cuda"),
-                )
-            ]
 
-        loss_grasp_box = self.grasp_loss(pred_grasp_box, grasps_gt[:, :4])
-        # loss_grasp_box = F.mse_loss(pred_grasp_box, grasps_gt[:, :4])
+            # Create a mask to keep successful detections
+            keep_mask = ~torch.isin(
+                torch.arange(grasps_gt.size(0), device=self.device),
+                fails_embed_tensor.to("cuda"),
+            )
+
+            # Apply the mask to ground truth and boxes, predictions are already filtered
+            grasps_gt = grasps_gt[keep_mask]
+            classes_gt = classes_gt[keep_mask]
+            boxes = boxes[keep_mask]
+
+        # Convert absolute GT grasps to be relative to the ROI boxes
+        roi_boxes = boxes
+        roi_x1, roi_y1, roi_x2, roi_y2 = (
+            roi_boxes[:, 1],
+            roi_boxes[:, 2],
+            roi_boxes[:, 3],
+            roi_boxes[:, 4],
+        )
+        roi_w = roi_x2 - roi_x1
+        roi_h = roi_y2 - roi_y1
+
+        epsilon = 1e-6
+        roi_w = roi_w.clamp(min=epsilon)
+        roi_h = roi_h.clamp(min=epsilon)
+
+        gt_cx_abs, gt_cy_abs, gt_w_abs, gt_h_abs = (
+            grasps_gt[:, 0] * self.img_size,
+            grasps_gt[:, 1] * self.img_size,
+            grasps_gt[:, 2] * self.img_size,
+            grasps_gt[:, 3] * self.img_size,
+        )
+
+        gt_cx_rel = (gt_cx_abs - roi_x1) / roi_w
+        gt_cy_rel = (gt_cy_abs - roi_y1) / roi_h
+        gt_w_rel = gt_w_abs / roi_w
+        gt_h_rel = gt_h_abs / roi_h
+
+        grasps_gt_rel = torch.stack([gt_cx_rel, gt_cy_rel, gt_w_rel, gt_h_rel], dim=1)
+
+        loss_grasp_box = self.grasp_loss(pred_grasp_box, grasps_gt_rel)
         loss_angle = angle_loss(pred_angle, grasps_gt[:, 4:5])
         loss_class = F.cross_entropy(pred_class, classes_gt)
 
@@ -279,7 +338,22 @@ class LitGrasp(pl.LightningModule):
         else:
             val_loss = self.beta * mseloss + loss_class + val_backbone_loss * self.gamma
 
-        pred_combined = torch.cat([pred_grasp_box, pred_angle], dim=1)  # (B, 6)
+        # For metrics, we need to convert predicted relative grasps back to absolute
+        pred_cx_rel, pred_cy_rel, pred_w_rel, pred_h_rel = (
+            pred_grasp_box[:, 0],
+            pred_grasp_box[:, 1],
+            pred_grasp_box[:, 2],
+            pred_grasp_box[:, 3],
+        )
+        pred_cx_abs = pred_cx_rel * roi_w + roi_x1
+        pred_cy_abs = pred_cy_rel * roi_h + roi_y1
+        pred_w_abs = pred_w_rel * roi_w
+        pred_h_abs = pred_h_rel * roi_h
+        pred_grasp_box_abs = torch.stack(
+            [pred_cx_abs, pred_cy_abs, pred_w_abs, pred_h_abs], dim=1
+        )
+
+        pred_combined = torch.cat([pred_grasp_box_abs, pred_angle], dim=1)
         gt_combined = torch.cat([grasps_gt[:, :4], grasps_gt[:, 4:5]], dim=1)
 
         self.log("val_loss_box", loss_grasp_box, on_step=False, on_epoch=True)
@@ -380,37 +454,47 @@ class LitGrasp(pl.LightningModule):
         boxes = boxes.detach().cpu()
 
         drawn_imgs = []
-        for i in range(min(4, imgs.size(0))):  # 최대 4개까지만
-            img = imgs[i]
-            img = img.permute(1, 2, 0).cpu().numpy()  # CHW → HWC + NumPy 변환
-            img = (img * 255).astype(np.uint8)
-            _, x1, y1, x2, y2 = boxes[i].int().tolist()
-            img = cv2.rectangle(img.copy(), (x1, y1), (x2, y2), (255, 0, 0), 2)
+        # Ensure we have predictions to visualize
+        num_preds_to_viz = min(pred_box.size(0), 4)
 
-            cx, cy, w, h = pred_box[i]
+        for i in range(num_preds_to_viz):
+            # Find the original image in the batch this prediction corresponds to
+            batch_idx_for_pred = boxes[i, 0].int().item()
+            img = imgs[batch_idx_for_pred]
+            img = img.permute(1, 2, 0).cpu().numpy()
+            img = (
+                (img * 255).astype(np.uint8).copy()
+            )  # Use copy to avoid issues with read-only data
 
+            # Draw detection box
+            x1, y1, x2, y2 = boxes[i, 1:].int().tolist()
+            img = cv2.rectangle(img, (x1, y1), (x2, y2), (255, 0, 0), 2)
+
+            # Get relative grasp prediction
+            cx_rel, cy_rel, w_rel, h_rel = pred_box[i]
+
+            # Convert relative grasp to absolute coordinates based on its ROI
+            box_w = x2 - x1
+            box_h = y2 - y1
+            cx_abs = int(x1 + cx_rel * box_w)
+            cy_abs = int(y1 + cy_rel * box_h)
+            w_abs = int(w_rel * box_w)
+            h_abs = int(h_rel * box_h)
+
+            # Get angle
             pred_angle_rad = torch.atan2(pred_angle[i, 0], pred_angle[i, 1])
-            theta = torch.rad2deg(pred_angle_rad) % 360
-            # theta = math.degrees(math.asin(pred_angle[i].item()))
+            theta = torch.rad2deg(pred_angle_rad).item()
 
-            flg = 1
-            if theta < 0:
-                flg = -1
-            theta = 90 * flg - theta
-
-            cx = int(cx * 640)
-            cy = int(cy * 640)
-            w = int(w * 640)
-            h = int(h * 640)
-
-            rect = cv2.boxPoints(((cx, cy), (w, h), theta.item()))
+            # Draw grasp rectangle
+            rect = cv2.boxPoints(((cx_abs, cy_abs), (w_abs, h_abs), theta))
             rect = np.int0(rect)
-            img_1 = cv2.drawContours(img.copy(), [rect], -1, (0, 255, 0), 2)
+            img = cv2.drawContours(img, [rect], -1, (0, 255, 0), 2)
 
+            # Put class text
             cls_id = pred_class[i].item()
             cv2.putText(
-                img_1,
-                f"Class: {self.classes_name[cls_id]}",
+                img,
+                f"Class: {self.classes_name.get(cls_id, 'Unknown')}",
                 (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 1.0,
@@ -418,9 +502,10 @@ class LitGrasp(pl.LightningModule):
                 2,
             )
 
-            drawn_imgs.append(
-                torch.tensor(img_1).permute(2, 0, 1) / 255.0
-            )  # 다시 Tensor로 변환
+            drawn_imgs.append(torch.tensor(img).permute(2, 0, 1) / 255.0)
 
-        grid = vutils.make_grid(drawn_imgs, nrow=2)
-        self.logger.experiment.add_image("Grasp Visualization", grid, self.global_step)
+        if drawn_imgs:
+            grid = vutils.make_grid(drawn_imgs, nrow=2)
+            self.logger.experiment.add_image(
+                "Grasp Visualization", grid, self.global_step
+            )

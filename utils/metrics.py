@@ -48,8 +48,8 @@ def grasp_iou(pred_box, gt_box, img_size=640):
     gt_theta = (90 * (1 if gt_theta >= 0 else -1)) - gt_theta
 
     pred_rect = (
-        (pred_cx * img_size, pred_cy * img_size),
-        (pred_w * img_size, pred_h * img_size),
+        (pred_cx, pred_cy),
+        (pred_w, pred_h ),
         -pred_theta,
     )
     gt_rect = (
